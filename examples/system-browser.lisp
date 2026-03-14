@@ -213,11 +213,67 @@
     (setf (status-pane-sections *status*)
           `(("Packages" . ,(length *packages*))
             ("Selected" . ,(or *selected-package* "(none)"))
-            ("Tab" . "switch pane")
+            ("Tab" . "complete/focus")
             ("q" . "quit")))
     ;; Update backend pane list
     (setf (backend-panes backend)
           (list *browser-pane* *detail-pane* *interactor* *status*))))
+
+;;; ============================================================
+;;; Command Table
+;;; ============================================================
+
+(defvar *commands* (make-command-table "system-browser"))
+
+(defun navigate-to-package (name)
+  "Navigate to a package by name. Returns T if found."
+  (let ((pkg (find-package (string-upcase name))))
+    (when pkg
+      (let ((idx (position (package-name pkg) *packages* :test #'string=)))
+        (when idx
+          (select-package idx)
+          (setf *scroll-offset* (max 0 (- idx 5))
+                (pane-dirty-p *browser-pane*) t
+                (pane-dirty-p *detail-pane*) t)
+          t)))))
+
+(define-command (*commands* "find" :documentation "Find and select a package by name")
+    ((name string :prompt "package"))
+  "Navigate to the named package."
+  (unless (navigate-to-package name)
+    (error "Package ~A not found" name)))
+
+(define-command (*commands* "apropos" :documentation "Search for packages matching a substring")
+    ((substring string :prompt "search"))
+  "List packages whose names contain SUBSTRING."
+  (let* ((sub (string-upcase substring))
+         (matches (remove-if-not (lambda (name) (search sub name)) *packages*)))
+    (if matches
+        (progn
+          ;; Navigate to first match
+          (navigate-to-package (first matches))
+          (format nil "~D match~:P: ~{~A~^, ~}" (length matches) matches))
+        (error "No packages matching ~A" substring))))
+
+(define-command (*commands* "refresh" :documentation "Refresh the package list")
+    ()
+  "Reload all packages."
+  (refresh-packages)
+  (select-package 0)
+  (setf *scroll-offset* 0
+        (pane-dirty-p *browser-pane*) t
+        (pane-dirty-p *detail-pane*) t))
+
+(define-command (*commands* "help" :documentation "Show available commands")
+    ()
+  "List all available commands."
+  (let ((cmds (list-commands *commands*)))
+    (format nil "Commands: ~{~A~^, ~}" cmds)))
+
+(define-command (*commands* "quit" :documentation "Exit the system browser")
+    ()
+  "Quit the application."
+  (setf (backend-running-p *current-backend*) nil))
 
 ;;; ============================================================
 ;;; Pane Event Handling
@@ -228,7 +284,7 @@
   (setf (status-pane-sections *status*)
         `(("Packages" . ,(length *packages*))
           ("Selected" . ,(or *selected-package* "(none)"))
-          ("Tab" . "switch pane")
+          ("Tab" . "complete/focus")
           ("q" . "quit"))
         (pane-dirty-p *status*) t))
 
@@ -331,17 +387,7 @@
         *interactor* (make-instance 'interactor-pane
                                      :title "Command"
                                      :prompt "» "
-                                     :submit-fn (lambda (input)
-                                                  (let ((pkg (find-package (string-upcase input))))
-                                                    (when pkg
-                                                      (let ((idx (position (package-name pkg) *packages*
-                                                                           :test #'string=)))
-                                                        (when idx
-                                                          (select-package idx)
-                                                          (setf *scroll-offset*
-                                                                (max 0 (- idx 5))
-                                                                (pane-dirty-p *browser-pane*) t
-                                                                (pane-dirty-p *detail-pane*) t)))))))
+                                     :command-table *commands*)
         *status* (make-instance 'status-pane))
   ;; Create and run frame
   (let ((frame (make-instance 'application-frame

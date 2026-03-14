@@ -68,6 +68,9 @@
    #:interactor-pane-input
    #:interactor-pane-history
    #:interactor-pane-prompt
+   #:interactor-pane-command-table
+   #:interactor-pane-message
+   #:interactor-pane-submit-fn
    #:status-pane
    #:status-pane-sections
 
@@ -82,11 +85,22 @@
    #:command-table
    #:make-command-table
    #:command-table-name
+   #:command-entry
+   #:command-entry-name
+   #:command-entry-function
+   #:command-entry-documentation
+   #:command-entry-arg-specs
+   #:command-arg-spec
+   #:make-arg-spec
    #:define-command
+   #:register-command
    #:find-command
    #:list-commands
    #:execute-command
    #:complete-command
+   #:complete-input
+   #:parse-command-input
+   #:dispatch-command-input
 
    ;; Presentations
    #:presentation

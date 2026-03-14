@@ -85,12 +85,20 @@
                      (char= ch #\DC1))) ; Ctrl-Q
          (setf (backend-running-p backend) nil)
          t)
-        ;; Tab - cycle focus
+        ;; Tab - cycle focus (unless focused pane is an interactor with command table)
         ((eql code +key-tab+)
-         (if (key-event-ctrl-p key)
-             (focus-prev-pane backend)
-             (focus-next-pane backend))
-         t)
+         (let ((focused (backend-focused-pane backend)))
+           (if (and (not (key-event-ctrl-p key))
+                    (typep focused 'interactor-pane)
+                    (interactor-pane-command-table focused))
+               ;; Let Tab pass through to interactor for completion
+               nil
+               ;; Normal focus cycling
+               (progn
+                 (if (key-event-ctrl-p key)
+                     (focus-prev-pane backend)
+                     (focus-next-pane backend))
+                 t))))
         ;; Otherwise not consumed
         (t nil)))))
 

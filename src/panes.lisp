@@ -76,30 +76,42 @@
    (prompt :initarg :prompt :initform "> " :accessor interactor-pane-prompt)
    (submit-fn :initarg :submit-fn :initform nil
               :accessor interactor-pane-submit-fn
-              :documentation "Function (lambda (input)) called on Enter"))
-  (:documentation "Command input pane with history."))
+              :documentation "Function (lambda (input)) called on Enter")
+   (command-table :initarg :command-table :initform nil
+                  :accessor interactor-pane-command-table
+                  :documentation "Command table for dispatch and completion")
+   (message :initform nil :accessor interactor-pane-message
+            :documentation "Transient feedback message (e.g. error, completion list)")
+   (message-timer :initform 0 :accessor interactor-pane-message-timer))
+  (:documentation "Command input pane with history and command table support."))
 
 (defmethod pane-render ((p interactor-pane) medium)
-  "Render prompt and input text."
+  "Render prompt and input text, plus any transient message."
   (let* ((cx (pane-content-x p))
          (cy (pane-content-y p))
          (cw (pane-content-width p))
          (prompt (interactor-pane-prompt p))
          (input (interactor-pane-input p))
+         (msg (interactor-pane-message p))
          (line (concatenate 'string prompt input))
          (display (if (> (length line) cw)
                       (subseq line (max 0 (- (length line) cw)))
                       line)))
     ;; Clear line
     (medium-fill-rect medium cx cy cw 1)
-    ;; Write prompt + input
-    (medium-write-string medium cx cy display
-                         :fg (lookup-color :green))
-    ;; Position cursor
-    (let ((scr (medium-screen medium))
-          (cursor-x (+ cx (length prompt) (interactor-pane-cursor-pos p))))
-      (screen-set-cursor scr (min cursor-x (+ cx cw -1)) cy)
-      (screen-show-cursor scr t))))
+    ;; Show message if present, otherwise prompt + input
+    (if msg
+        (medium-write-string medium cx cy
+                             (if (> (length msg) cw) (subseq msg 0 cw) msg)
+                             :fg (lookup-color :yellow))
+        (progn
+          (medium-write-string medium cx cy display
+                               :fg (lookup-color :green))
+          ;; Position cursor
+          (let ((scr (medium-screen medium))
+                (cursor-x (+ cx (length prompt) (interactor-pane-cursor-pos p))))
+            (screen-set-cursor scr (min cursor-x (+ cx cw -1)) cy)
+            (screen-show-cursor scr t))))))
 
 (defmethod pane-handle-event ((p interactor-pane) event)
   "Handle keyboard input for the interactor."
@@ -107,18 +119,58 @@
     (let* ((key (keyboard-event-key event))
            (code (key-event-code key))
            (ch (key-event-char key)))
+      ;; Any keypress clears a transient message
+      (when (interactor-pane-message p)
+        (setf (interactor-pane-message p) nil
+              (pane-dirty-p p) t))
       (cond
         ;; Enter - submit
         ((eql code +key-enter+)
          (let ((input (interactor-pane-input p)))
-           (when (and (> (length input) 0)
-                      (interactor-pane-submit-fn p))
+           (when (> (length input) 0)
              (push input (interactor-pane-history p))
              (setf (interactor-pane-history-index p) -1)
-             (funcall (interactor-pane-submit-fn p) input)
+             ;; Clear any message
+             (setf (interactor-pane-message p) nil)
+             ;; Dispatch: submit-fn takes priority, then command table
+             (cond
+               ((interactor-pane-submit-fn p)
+                (funcall (interactor-pane-submit-fn p) input))
+               ((interactor-pane-command-table p)
+                (multiple-value-bind (result status message)
+                    (dispatch-command-input (interactor-pane-command-table p) input)
+                  (declare (ignore result))
+                  (when (member status '(:not-found :error))
+                    (setf (interactor-pane-message p) message
+                          (interactor-pane-message-timer p) 40)))))
              (setf (interactor-pane-input p) ""
                    (interactor-pane-cursor-pos p) 0
                    (pane-dirty-p p) t)))
+         t)
+        ;; Tab - completion
+        ((eql code +key-tab+)
+         (let ((table (interactor-pane-command-table p)))
+           (when table
+             (multiple-value-bind (completed matches unique-p)
+                 (complete-input table (interactor-pane-input p))
+               (cond
+                 (unique-p
+                  ;; Single match: fill in with trailing space
+                  (setf (interactor-pane-input p)
+                        (concatenate 'string completed " ")
+                        (interactor-pane-cursor-pos p)
+                        (1+ (length completed))
+                        (interactor-pane-message p) nil
+                        (pane-dirty-p p) t))
+                 (matches
+                  ;; Multiple matches: fill common prefix, show matches
+                  (setf (interactor-pane-input p) completed
+                        (interactor-pane-cursor-pos p) (length completed)
+                        (interactor-pane-message p)
+                        (format nil "~{~A~^ ~}" matches)
+                        (interactor-pane-message-timer p) 40
+                        (pane-dirty-p p) t))
+                 (t nil)))))
          t)
         ;; Backspace
         ((eql code +key-backspace+)
