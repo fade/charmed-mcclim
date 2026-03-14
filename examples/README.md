@@ -25,7 +25,7 @@ sbcl --eval '(ql:quickload :charmed-mcclim)' \
 │  CHARMED-MCCLIM  ││ ...                       │
 │  CL-USER         ││ ── Functions ──           │
 │  COMMON-LISP     ││   CURRY                   │
-│  ...             ││   FLATTEN                  │
+│  ...             ││   FLATTEN                 │
 └──────────────────┘└───────────────────────────┘
 ┌─ Command ────────────────────────────────────┐
 │» find charmed                                │
@@ -74,3 +74,118 @@ The system browser demonstrates:
 - **`presentations`** — package names as interactive semantic regions with inverse highlight and click/Enter activation
 - **`*current-backend*`** — allows pane handlers to signal quit
 - **Layout function** — responsive pane positioning on resize
+
+---
+
+## Object Inspector
+
+The object inspector is an interactive tool for exploring arbitrary Common Lisp objects. Point it at anything — a package, a symbol, a CLOS instance, a hash table, a list — and it shows you the object's structure broken down into labelled slots. Every displayed value is a clickable presentation: drill into it to inspect it recursively, building up a navigation history you can walk back through.
+
+It also supports inline editing: select a slot, press `e`, modify the value, and press Enter to `setf` it live. This makes it both an inspector and an editor — useful for exploring unfamiliar data structures and for interactive debugging.
+
+### Running
+
+```sh
+sbcl --eval '(ql:quickload :charmed-mcclim)' \
+     --eval '(load "examples/object-inspector.lisp")' \
+     --eval '(charmed-mcclim/object-inspector:run)'
+```
+
+By default it opens on the `CHARMED-MCCLIM` package. To inspect a specific object:
+
+```lisp
+(charmed-mcclim/object-inspector:inspect-object *some-object*)
+```
+
+### Layout
+
+```
+┌─ History ──┐┌─ Slots ─────────────────┐┌─ Detail ─────────────┐
+│            ││ Name       = CHARMED-... ││ Type: (INTEGER ...)   │
+│            ││ Nicknames  = CMCLIM      ││ Class: FIXNUM         │
+│            ││ Uses       = COMMON-L... ││                       │
+│> Package:  ││ Used by    = CHARMED-... ││ Printed: 1697         │
+│  CHARMED-  ││ External s = 119        ││                       │
+│  MCCLIM    ││>Total symb = 1697       ││                       │
+└────────────┘└──────────────────────────┘└───────────────────────┘
+┌─ Command ──────────────────────────────────────────────────────┐
+│» inspect (find-package :alexandria)                            │
+└────────────────────────────────────────────────────────────────┘
+ Object: Package: CHARMED-MCCLIM  Slots: 6  History: 0  q: quit
+```
+
+- **History** (left) — breadcrumb stack of previously inspected objects. The current object is highlighted at the bottom. Click any entry to jump back to it.
+- **Slots** (center) — the inspectable fields of the current object. Labels on the left, values on the right. The selected slot is highlighted with inverse style.
+- **Detail** (right) — expanded information about the selected slot's value: type, class hierarchy, documentation, or full `DESCRIBE` output.
+- **Command** (bottom) — interactor with tab completion for inspector commands.
+
+### What gets inspected
+
+The inspector knows how to break down these types into meaningful slots:
+
+| Type | Slots shown |
+|------|-------------|
+| **Package** | Name, nicknames, use-list, used-by, external/total symbol counts |
+| **Symbol** | Name, package, value, function, macro, plist, class |
+| **CLOS instance** | All slots with names, values, and types (via MOP on SBCL) |
+| **List** | Indexed elements `[0]`, `[1]`, ... (up to 50) |
+| **Dotted pair** | CAR and CDR |
+| **Vector/Array** | Indexed elements |
+| **Hash table** | Test, count, size, then key/value pairs |
+| **Function** | Name, arglist, documentation |
+| **Everything else** | Type and printed representation |
+
+### Navigation
+
+| Key | Context | Action |
+|-----|---------|--------|
+| ↑ / ↓ | Slots pane | Select previous/next slot |
+| Enter | Slots pane | Drill into the selected slot's value |
+| b / Backspace | Slots pane | Go back to previous object |
+| e | Slots pane | Begin inline editing of selected slot |
+| Enter | Slots pane (editing) | Commit the edit (`setf` the value) |
+| Escape | Slots pane (editing) | Cancel editing |
+| ← / → / Home / End | Slots pane (editing) | Move edit cursor |
+| ↑ / ↓ | Detail pane | Scroll one line |
+| Page Up / Page Down | Detail pane | Scroll one page |
+| Mouse click | Slots pane | Drill into clicked value |
+| Mouse click | History pane | Jump back to that object |
+| Tab | Any pane | Cycle focus / complete command |
+| q | Slots/Detail/History pane | Quit |
+| Ctrl-C / Ctrl-Q | Anywhere | Quit |
+
+### Commands
+
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `inspect <expr>` | Lisp expression | Evaluate and inspect the result |
+| `back` | — | Return to previously inspected object |
+| `edit` | — | Begin editing the selected slot |
+| `setf <value>` | Lisp expression | Set the selected slot to a new value |
+| `describe` | — | Show `CL:DESCRIBE` output in detail pane |
+| `type` | — | Show class precedence list in detail pane |
+| `help` | — | List all commands |
+| `quit` | — | Exit the inspector |
+
+### Inline Editing
+
+Editable slots are marked by being settable (symbol values, list elements, hash table entries, CLOS slots). To edit:
+
+1. Navigate to the slot with ↑/↓
+2. Press `e` to enter edit mode (the separator changes to `▸`)
+3. Modify the value text (it will be read with `READ-FROM-STRING`)
+4. Press Enter to commit or Escape to cancel
+
+You can also use the `setf` command to set a value without entering edit mode.
+
+### Architecture
+
+The object inspector demonstrates:
+
+- **Generic inspection protocol** — `inspect-slots`, `object-title`, `object-summary` methods specialised per type
+- **Drill-down navigation** — presentations on slot values enable recursive inspection with history
+- **History stack** — push/pop navigation with visual breadcrumb trail
+- **Inline editing** — edit mode transforms a presentation into an input field
+- **MOP integration** — SBCL's MOP is used to enumerate CLOS instance slots
+- **Type-aware display** — different rendering for packages, symbols, lists, hash tables, CLOS objects, functions
+- **Three content panes** — history, slots, and detail working together
