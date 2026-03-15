@@ -200,6 +200,45 @@
                  `((setf ,width (min ,width (- ,max-col ,sx)))))
              ,@body)))))
 
+;;; Text style → charmed terminal style mapping
+
+(defun text-style-to-charmed-style (medium)
+  "Build a charmed style from the medium's current text style and ink.
+   Maps McCLIM text-style face to terminal attributes:
+     :bold → bold, :italic → italic, :bold-italic → bold+italic
+   Maps text-style size to terminal attributes:
+     :tiny/:very-small/:small → dim, :large/:very-large/:huge → bold
+   Maps medium-ink to fg color."
+  (let* ((ink (medium-ink medium))
+         (fg (ink-to-charmed-fg ink))
+         (ts (handler-case (medium-merged-text-style medium)
+               (error () nil)))
+         (face (when ts (handler-case (text-style-face ts)
+                          (error () nil))))
+         (size (when ts (handler-case (text-style-size ts)
+                          (error () nil))))
+         (bold-p nil)
+         (italic-p nil)
+         (dim-p nil)
+         (underline-p nil))
+    ;; Map face
+    (case face
+      (:bold (setf bold-p t))
+      (:italic (setf italic-p t))
+      (:bold-italic (setf bold-p t italic-p t)))
+    ;; Map size — small sizes get dim, large sizes get bold
+    (case size
+      ((:tiny :very-small :small) (setf dim-p t))
+      ((:large :very-large :huge) (setf bold-p t)))
+    ;; Build style if any attributes are set
+    (if (or fg bold-p italic-p dim-p underline-p)
+        (charmed:make-style :fg fg
+                            :bold bold-p
+                            :italic italic-p
+                            :dim dim-p
+                            :underline underline-p)
+        nil)))
+
 ;;; Drawing operations
 
 (defmethod medium-draw-text* ((medium charmed-medium) string x y
@@ -224,16 +263,14 @@
                       (:center (- col (floor (length text) 2)))
                       (otherwise col)))
                (len (length text))
-               (ink (medium-ink medium))
-               (fg (ink-to-charmed-fg ink)))
+               (style (text-style-to-charmed-style medium)))
           (with-clipping (medium col row :width len)
             (let ((clipped-text (if (< len (length text))
                                     (subseq text 0 len)
                                     text)))
-              (if fg
-                  (let ((style (charmed:make-style :fg fg)))
-                    (charmed:screen-write-string screen col row clipped-text
-                                                 :style style))
+              (if style
+                  (charmed:screen-write-string screen col row clipped-text
+                                               :style style)
                   (charmed:screen-write-string screen col row clipped-text)))))))))
 
 (defmethod medium-draw-point* ((medium charmed-medium) x y)
