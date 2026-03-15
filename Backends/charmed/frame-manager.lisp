@@ -78,6 +78,13 @@ accumulating sheet-transformation offsets.  Stops at grafts."
 ;;; Custom frame top-level for charmed.
 ;;; Use as :top-level (charmed-frame-top-level) in define-application-frame.
 ;;; This runs inside run-frame-top-level :around which handles frame-exit.
+;;; Generic function called by the event loop for non-quit key events.
+;;; Frames can specialize this to handle input.
+(defgeneric charmed-handle-key-event (frame key)
+  (:method ((frame application-frame) key)
+    (declare (ignore key))
+    nil))
+
 (defun charmed-frame-top-level (frame &key &allow-other-keys)
   "Top-level loop for frames on the charmed terminal backend."
   (let* ((fm (frame-manager frame))
@@ -93,9 +100,17 @@ accumulating sheet-transformation offsets.  Stops at grafts."
         (when key
           (let ((ch (charmed:key-event-char key))
                 (ctrl-p (charmed:key-event-ctrl-p key)))
-            ;; Ctrl-Q signals frame-exit (caught by :around method)
-            (when (and ctrl-p ch (char-equal ch #\q))
-              (frame-exit frame)))))
+            (cond
+              ;; Ctrl-Q signals frame-exit (caught by :around method)
+              ((and ctrl-p ch (char-equal ch #\q))
+               (frame-exit frame))
+              ;; Dispatch other keys to the frame
+              (t
+               (charmed-handle-key-event frame key))))))
+      ;; Redisplay any panes that need it
+      (redisplay-frame-panes frame)
+      (draw-pane-borders frame port)
+      (port-force-output port)
       ;; Check for resize
       (let ((resize (charmed:poll-resize)))
         (when resize

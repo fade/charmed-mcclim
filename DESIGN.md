@@ -4,7 +4,7 @@
 **Author:** Glenn Thompson  
 **Project:** `charmed-mcclim`  
 **Language:** Common Lisp  
-**Status:** Phases 1–5 complete; Phase 5a (frame macro, tests) complete  
+**Status:** Phases 1–5a complete; Phase 6 (McCLIM backend) in progress  
 
 ---
 
@@ -981,6 +981,125 @@ Structured input, labels, fields, menus — terminal-friendly layout.
 ## 5. Package/system explorer
 
 Lists, details, drill-down, actions — strong use of focus and presentations.
+
+---
+
+---
+
+# Phase 6: McCLIM Backend Implementation
+
+Phase 6 implements a real McCLIM backend using charmed as the terminal substrate.
+This is no longer CLIM-inspired — it is actual McCLIM running in a terminal.
+
+## ASDF System: `mcclim-charmed`
+
+Located in `Backends/charmed/`, loaded via `asdf:load-system :mcclim-charmed`.
+Depends on `:mcclim` and `:charmed`.
+
+## Backend Classes
+
+| Class | File | Role |
+|---|---|---|
+| `charmed-port` | `port.lisp` | McCLIM port — owns the charmed screen, processes events |
+| `charmed-medium` | `medium.lisp` | Drawing medium — maps CLIM drawing ops to charmed screen cells |
+| `charmed-graft` | `graft.lisp` | Root sheet — terminal dimensions as graft size |
+| `charmed-frame-manager` | `frame-manager.lisp` | Frame lifecycle, layout, top-level event loop |
+
+## Coordinate System
+
+All sheet coordinates are in character cells (columns, rows). The medium
+applies `medium-device-transformation` (via `sheet-to-screen` helper) to
+map sheet-local coordinates to absolute screen positions. This is how
+multi-pane rendering works — each pane draws at (0,0) in its own space,
+and the transformation offsets it to the correct screen position.
+
+Key finding: `sheet-native-transformation` is identity for all sheets in
+our backend (since `realize-mirror` returns the same screen for all sheets).
+The actual offsets come from `sheet-transformation` on the parent chain.
+
+## Repaint Protocol
+
+McCLIM's repaint protocol flows as follows:
+
+1. `redisplay-frame-panes` — checks `pane-needs-redisplay` per pane
+2. `do-redisplay-pane` — runs the display function, records output
+3. `dispatch-repaint` → `repaint-sheet` → `handle-repaint`
+4. `handle-repaint` on `output-recording-stream` calls `stream-replay`
+5. Medium drawing methods write to charmed's screen back buffer
+6. `port-force-output` → `charmed:screen-present` flushes via diff
+
+The `:around` methods on `handle-repaint` set up clipping regions,
+lock mirrors, and bind foreground/background colors.
+
+### Per-pane redisplay
+
+The event loop calls `(redisplay-frame-panes frame)` each iteration
+(without `:force-p`). Only panes with `(pane-needs-redisplay pane)` true
+are actually redrawn. Frames set this flag via:
+
+```lisp
+(setf (pane-needs-redisplay pane) t)
+```
+
+### Event-driven repaint
+
+The `charmed-frame-top-level` event loop:
+1. Polls for charmed key events (50ms timeout)
+2. Dispatches Ctrl-Q as `frame-exit`
+3. Dispatches other keys via `charmed-handle-key-event` (generic function)
+4. Calls `redisplay-frame-panes` to repaint dirty panes
+5. Draws pane border separators
+6. Flushes screen via `port-force-output`
+7. Checks for terminal resize
+
+## Multi-Pane Infrastructure
+
+### Layout
+
+McCLIM's `vertically` / `horizontally` macros create `vrack-pane` composition
+panes that allocate space to children. Layout negotiation via `compose-space`
+and `allocate-space` works with our backend.
+
+Important: `:application` panes must use `:scroll-bars nil` — scroll bar
+wrappers (viewport-pane, scroller-pane) require full mirror geometry support
+that our backend doesn't provide yet.
+
+### Pane borders
+
+`draw-pane-borders` walks the sheet hierarchy to find layout children with
+different Y positions, then draws `─` separator lines between them directly
+on the charmed screen. `sheet-screen-y` computes absolute screen Y by
+walking the parent chain and accumulating `sheet-transformation` offsets
+(stops at grafts, which lack transformations).
+
+McCLIM stores sheet children in reverse order — border drawing checks
+`screen-y > 0` rather than "not first child".
+
+### Key event dispatch
+
+`charmed-handle-key-event` is a generic function that frames specialize:
+
+```lisp
+(defmethod clim-charmed:charmed-handle-key-event
+    ((frame my-frame) key)
+  ;; Handle key, mark panes for redisplay
+  (setf (pane-needs-redisplay (find-pane-named frame 'my-pane)) t))
+```
+
+## Test Applications
+
+| File | Description |
+|---|---|
+| `test-hello.lisp` | Single-pane hello world with Ctrl-Q exit |
+| `test-multi-pane.lisp` | Two vertically stacked panes with separator, interactive keypress counter |
+
+## Known Limitations
+
+- `:scroll-bars t` causes heap exhaustion (viewport/scroller wrappers unsupported)
+- No input focus routing to individual panes yet
+- No scrolling / viewport clipping
+- No text cursor tracking for stream output
+- `sheet-native-transformation` is identity — coordinate offsetting handled in medium
 
 ---
 
