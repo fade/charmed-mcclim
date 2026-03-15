@@ -102,12 +102,103 @@
 
 ;;; Coordinate transformation - sheet space to screen (mirror) space
 
+(defun pane-scroll-offset (port pane)
+  "Return the vertical scroll offset for PANE, defaulting to 0."
+  (gethash pane (charmed-port-scroll-offsets port) 0))
+
+(defun (setf pane-scroll-offset) (value port pane)
+  "Set the vertical scroll offset for PANE."
+  (setf (gethash pane (charmed-port-scroll-offsets port)) value))
+
 (defun sheet-to-screen (medium x y)
-  "Transform sheet-space coordinates to screen coordinates via device transformation."
-  (let ((dt (medium-device-transformation medium)))
-    (if dt
-        (transform-position dt x y)
-        (values x y))))
+  "Transform sheet-space coordinates to screen coordinates using the frozen
+   viewport geometry captured before display (to avoid relayout drift).
+   Falls back to a parent-chain walk if no frozen geometry is available.
+   Applies the pane's scroll offset to the Y coordinate."
+  (let* ((sheet (medium-sheet medium))
+         (port (port medium))
+         (scroll-y (if (and port sheet)
+                       (pane-scroll-offset port sheet)
+                       0))
+         (vp (when (and port sheet)
+               (gethash sheet (charmed-port-viewport-sizes port)))))
+    (if vp
+        ;; Use frozen screen position from capture-pane-viewport-sizes
+        (let ((sx (first vp))
+              (sy (second vp)))
+          (values (+ sx x) (- (+ sy y) scroll-y)))
+        ;; Fallback: walk parent chain
+        (if sheet
+            (multiple-value-bind (ox oy) (sheet-screen-position sheet)
+              (values (+ ox x) (- (+ oy y) scroll-y)))
+            (values x (- y scroll-y))))))
+
+;;; Viewport clipping - compute the visible screen region for a sheet
+
+(defun sheet-screen-position (sheet)
+  "Walk up the PARENT chain to compute the absolute screen position (x, y)
+   of SHEET by accumulating sheet-transformation offsets.  Starts from the
+   sheet's parent — the sheet's own transformation is excluded because it
+   may include content offsets from output recording.  Stops at grafts."
+  (let ((sx 0) (sy 0))
+    (loop for s = (sheet-parent sheet) then (sheet-parent s)
+          while (and s (not (graftp s)))
+          do (handler-case
+                 (let ((tr (sheet-transformation s)))
+                   (when tr
+                     (multiple-value-bind (tx ty) (transform-position tr 0 0)
+                       (incf sx tx)
+                       (incf sy ty))))
+               (error () (return))))
+    (values sx sy)))
+
+(defun pane-screen-bounds (medium)
+  "Return (values min-col min-row max-col max-row) for the medium's sheet.
+   These are the FIXED screen coordinates of the pane's layout-allocated region.
+   Uses the frozen viewport geometry captured before display, so it is not
+   affected by content expansion or relayout.  Returns NIL if bounds cannot
+   be determined."
+  (let* ((sheet (medium-sheet medium))
+         (port (when sheet (port medium))))
+    (when (and sheet port)
+      (handler-case
+          (let ((vp (gethash sheet (charmed-port-viewport-sizes port))))
+            (if vp
+                ;; Use frozen geometry: (screen-x screen-y width height)
+                (let ((sx (first vp))
+                      (sy (second vp))
+                      (w  (third vp))
+                      (h  (fourth vp)))
+                  (values (round sx) (round sy)
+                          (round (+ sx w)) (round (+ sy h))))
+                ;; Fallback: walk parent chain + sheet-region
+                (let ((region (sheet-region sheet)))
+                  (when region
+                    (multiple-value-bind (x1 y1 x2 y2)
+                        (bounding-rectangle* region)
+                      (declare (ignore x1 y1))
+                      (multiple-value-bind (sx sy) (sheet-screen-position sheet)
+                        (values (round sx) (round sy)
+                                (round (+ sx x2)) (round (+ sy y2)))))))))
+        (error () nil)))))
+
+(defmacro with-clipping ((medium sx sy &key width) &body body)
+  "Execute BODY only if the screen point (SX, SY) is within the pane bounds.
+   When WIDTH is provided, it is adjusted (via setf) to fit within the right edge."
+  (let ((min-col (gensym "MIN-COL"))
+        (min-row (gensym "MIN-ROW"))
+        (max-col (gensym "MAX-COL"))
+        (max-row (gensym "MAX-ROW")))
+    `(multiple-value-bind (,min-col ,min-row ,max-col ,max-row)
+         (pane-screen-bounds ,medium)
+       (if (null ,min-col)
+           ;; No bounds available — draw unclipped
+           (progn ,@body)
+           (when (and (>= ,sy ,min-row) (< ,sy ,max-row)
+                      (>= ,sx ,min-col) (< ,sx ,max-col))
+             ,@(when width
+                 `((setf ,width (min ,width (- ,max-col ,sx)))))
+             ,@body)))))
 
 ;;; Drawing operations
 
@@ -132,13 +223,18 @@
                       (:right (- col (length text)))
                       (:center (- col (floor (length text) 2)))
                       (otherwise col)))
+               (len (length text))
                (ink (medium-ink medium))
                (fg (ink-to-charmed-fg ink)))
-          (if fg
-              (let ((style (charmed:make-style :fg fg)))
-                (charmed:screen-write-string screen col row text
-                                             :style style))
-              (charmed:screen-write-string screen col row text)))))))
+          (with-clipping (medium col row :width len)
+            (let ((clipped-text (if (< len (length text))
+                                    (subseq text 0 len)
+                                    text)))
+              (if fg
+                  (let ((style (charmed:make-style :fg fg)))
+                    (charmed:screen-write-string screen col row clipped-text
+                                                 :style style))
+                  (charmed:screen-write-string screen col row clipped-text)))))))))
 
 (defmethod medium-draw-point* ((medium charmed-medium) x y)
   (let ((screen (medium-screen medium)))
@@ -149,10 +245,11 @@
               (ink (medium-ink medium))
               (fg nil))
           (setf fg (ink-to-charmed-fg ink))
-          (if fg
-              (charmed:screen-set-cell screen col row #\·
-                                       :style (charmed:make-style :fg fg))
-              (charmed:screen-set-cell screen col row #\·)))))))
+          (with-clipping (medium col row)
+            (if fg
+                (charmed:screen-set-cell screen col row #\·
+                                         :style (charmed:make-style :fg fg))
+                (charmed:screen-set-cell screen col row #\·))))))))
 
 (defmethod medium-draw-points* ((medium charmed-medium) coord-seq)
   (loop for i below (length coord-seq) by 2
@@ -170,25 +267,33 @@
                 (ink (medium-ink medium))
                 (fg nil))
             (setf fg (ink-to-charmed-fg ink))
-            (cond
-              ;; Horizontal line
-              ((= row1 row2)
-               (let ((c1 (min col1 col2))
-                     (c2 (max col1 col2)))
-                 (loop for c from c1 to c2
-                       do (if fg
-                              (charmed:screen-set-cell screen c row1 #\─
-                                                       :style (charmed:make-style :fg fg))
-                              (charmed:screen-set-cell screen c row1 #\─)))))
-              ;; Vertical line
-              ((= col1 col2)
-               (let ((r1 (min row1 row2))
-                     (r2 (max row1 row2)))
-                 (loop for r from r1 to r2
-                       do (if fg
-                              (charmed:screen-set-cell screen col1 r #\│
-                                                       :style (charmed:make-style :fg fg))
-                              (charmed:screen-set-cell screen col1 r #\│))))))))))))
+            (multiple-value-bind (min-col min-row max-col max-row)
+                (pane-screen-bounds medium)
+              (flet ((in-bounds-p (c r)
+                       (or (null min-col)
+                           (and (>= r min-row) (< r max-row)
+                                (>= c min-col) (< c max-col)))))
+                (cond
+                  ;; Horizontal line
+                  ((= row1 row2)
+                   (let ((c1 (min col1 col2))
+                         (c2 (max col1 col2)))
+                     (loop for c from c1 to c2
+                           when (in-bounds-p c row1)
+                           do (if fg
+                                  (charmed:screen-set-cell screen c row1 #\─
+                                                           :style (charmed:make-style :fg fg))
+                                  (charmed:screen-set-cell screen c row1 #\─)))))
+                  ;; Vertical line
+                  ((= col1 col2)
+                   (let ((r1 (min row1 row2))
+                         (r2 (max row1 row2)))
+                     (loop for r from r1 to r2
+                           when (in-bounds-p col1 r)
+                           do (if fg
+                                  (charmed:screen-set-cell screen col1 r #\│
+                                                           :style (charmed:make-style :fg fg))
+                                  (charmed:screen-set-cell screen col1 r #\│))))))))))))))
 
 (defmethod medium-draw-lines* ((medium charmed-medium) coord-seq)
   (let ((tr (invert-transformation (medium-transformation medium))))
@@ -207,39 +312,58 @@
 
 (defmethod medium-draw-rectangle* ((medium charmed-medium)
                                    left top right bottom filled)
-  (let ((screen (medium-screen medium)))
+  (let ((screen (medium-screen medium))
+        (sheet (medium-sheet medium)))
     (when screen
+      ;; Skip filled background rects from non-stream-pane sheets (parent composites).
+      ;; These are full-screen background clears that would wipe child pane content.
+      (when (and filled (not (typep sheet 'clim-stream-pane)))
+        (return-from medium-draw-rectangle*))
       (multiple-value-bind (sl st) (sheet-to-screen medium left top)
         (multiple-value-bind (sr sb) (sheet-to-screen medium right bottom)
           (let* ((c1 (round sl))  (r1 (round st))
                  (c2 (round sr)) (r2 (round sb))
                  (ink (medium-ink medium))
                  (fg (ink-to-charmed-fg ink)))
-            (if filled
-                ;; Fill rectangle
-                (let ((bg (ink-to-charmed-bg ink)))
-                  (if (or fg bg)
-                      (let ((style (charmed:make-style :fg fg :bg bg)))
-                        (loop for r from r1 below r2
-                              do (loop for c from c1 below c2
-                                       do (charmed:screen-set-cell
-                                           screen c r #\Space :style style))))
-                      (loop for r from r1 below r2
-                            do (loop for c from c1 below c2
-                                     do (charmed:screen-set-cell
-                                         screen c r #\Space)))))
-                ;; Draw border using box characters
-                (progn
-                  (loop for c from (1+ c1) below c2
-                        do (charmed:screen-set-cell screen c r1 #\─)
-                           (charmed:screen-set-cell screen c r2 #\─))
-                  (loop for r from (1+ r1) below r2
-                        do (charmed:screen-set-cell screen c1 r #\│)
-                           (charmed:screen-set-cell screen c2 r #\│))
-                  (charmed:screen-set-cell screen c1 r1 #\┌)
-                  (charmed:screen-set-cell screen c2 r1 #\┐)
-                  (charmed:screen-set-cell screen c1 r2 #\└)
-                  (charmed:screen-set-cell screen c2 r2 #\┘)))))))))
+            ;; Clip rectangle coordinates to pane bounds
+            (multiple-value-bind (min-col min-row max-col max-row)
+                (pane-screen-bounds medium)
+              (when min-col
+                (setf c1 (max c1 min-col) r1 (max r1 min-row)
+                      c2 (min c2 max-col) r2 (min r2 max-row)))
+              (when (and (< c1 c2) (< r1 r2))
+                (if filled
+                    ;; Fill rectangle
+                    (let ((bg (ink-to-charmed-bg ink)))
+                      (if (or fg bg)
+                          (let ((style (charmed:make-style :fg fg :bg bg)))
+                            (loop for r from r1 below r2
+                                  do (loop for c from c1 below c2
+                                           do (charmed:screen-set-cell
+                                               screen c r #\Space :style style))))
+                          (loop for r from r1 below r2
+                                do (loop for c from c1 below c2
+                                         do (charmed:screen-set-cell
+                                             screen c r #\Space)))))
+                    ;; Draw border using box characters (per-cell clip)
+                    (flet ((in-bounds-p (c r)
+                             (or (null min-col)
+                                 (and (>= r min-row) (< r max-row)
+                                      (>= c min-col) (< c max-col)))))
+                      (loop for c from (1+ c1) below c2
+                            do (when (in-bounds-p c r1)
+                                 (charmed:screen-set-cell screen c r1 #\─))
+                               (when (in-bounds-p c r2)
+                                 (charmed:screen-set-cell screen c r2 #\─)))
+                      (loop for r from (1+ r1) below r2
+                            do (when (in-bounds-p c1 r)
+                                 (charmed:screen-set-cell screen c1 r #\│))
+                               (when (in-bounds-p c2 r)
+                                 (charmed:screen-set-cell screen c2 r #\│)))
+                      (when (in-bounds-p c1 r1) (charmed:screen-set-cell screen c1 r1 #\┌))
+                      (when (in-bounds-p c2 r1) (charmed:screen-set-cell screen c2 r1 #\┐))
+                      (when (in-bounds-p c1 r2) (charmed:screen-set-cell screen c1 r2 #\└))
+                      (when (in-bounds-p c2 r2) (charmed:screen-set-cell screen c2 r2 #\┘))))))))))))
 
 (defmethod medium-draw-rectangles* ((medium charmed-medium) position-seq filled)
   (loop for i below (length position-seq) by 4
@@ -302,9 +426,15 @@
         (multiple-value-bind (sr sb) (sheet-to-screen medium right bottom)
           (let ((c1 (max 0 (round sl)))  (r1 (max 0 (round st)))
                 (c2 (round sr)) (r2 (round sb)))
-            (when (and (> c2 c1) (> r2 r1))
-              (charmed:screen-fill-rect screen c1 r1
-                                        (- c2 c1) (- r2 r1)))))))))
+            ;; Clip to pane bounds
+            (multiple-value-bind (min-col min-row max-col max-row)
+                (pane-screen-bounds medium)
+              (when min-col
+                (setf c1 (max c1 min-col) r1 (max r1 min-row)
+                      c2 (min c2 max-col) r2 (min r2 max-row)))
+              (when (and (> c2 c1) (> r2 r1))
+                (charmed:screen-fill-rect screen c1 r1
+                                          (- c2 c1) (- r2 r1))))))))))
 
 (defmethod medium-beep ((medium charmed-medium))
   (write-char #\Bel *terminal-io*)

@@ -9,17 +9,23 @@
 (in-package #:clim-charmed-test-mp)
 
 (defun display-top (frame pane)
-  (let ((count (slot-value frame 'top-count))
-        (focused (eq pane (port-keyboard-input-focus (port (frame-manager frame))))))
-    (format pane "  TOP PANE~:[~; [FOCUSED]~]~%" focused)
-    (format pane "  Key presses while focused: ~D~%" count)
-    (format pane "  Tab = cycle focus, Ctrl-Q = exit~%")))
+  (let ((focused (eq pane (port-keyboard-input-focus (port (frame-manager frame)))))
+        (port (port (frame-manager frame))))
+    (format pane "  TOP PANE~:[~; [FOCUSED]~] (scroll: ~D)~%"
+            focused (clim-charmed::pane-scroll-offset port pane))
+    (format pane "  Tab=focus  Up/Down=scroll  PgUp/PgDn=page  Ctrl-Q=exit~%")
+    (format pane "  --- Scrollable content below ---~%")
+    (loop for i from 1 to 50
+          do (format pane "  Line ~2D: The quick brown fox jumps over the lazy dog~%" i))))
 
 (defun display-bottom (frame pane)
-  (let ((count (slot-value frame 'bottom-count))
-        (focused (eq pane (port-keyboard-input-focus (port (frame-manager frame))))))
-    (format pane "  BOTTOM PANE~:[~; [FOCUSED]~]~%" focused)
-    (format pane "  Key presses while focused: ~D~%" count)))
+  (let* ((port (port (frame-manager frame)))
+         (focus-sheet (port-keyboard-input-focus port))
+         (focused (eq pane focus-sheet)))
+    (format pane "  BOTTOM PANE~:[~; [FOCUSED]~] (scroll: ~D)~%"
+            focused (clim-charmed::pane-scroll-offset port pane))
+    (loop for i from 1 to 5
+          do (format pane "  Bottom line ~2D~%" i))))
 
 (define-application-frame multi-pane-test ()
   ((top-count :initform 0)
@@ -38,20 +44,8 @@
       (1/4 bottom-pane))))
   (:top-level (clim-charmed:charmed-frame-top-level)))
 
-;;; On any keypress, increment the focused pane's counter and redisplay it.
-(defmethod clim-charmed:charmed-handle-key-event
-    ((frame multi-pane-test) key focused-pane)
-  (declare (ignore key))
-  (when focused-pane
-    (let ((tp (find-pane-named frame 'top-pane))
-          (bp (find-pane-named frame 'bottom-pane)))
-      (cond
-        ((eq focused-pane tp)
-         (incf (slot-value frame 'top-count))
-         (setf (pane-needs-redisplay tp) t))
-        ((eq focused-pane bp)
-         (incf (slot-value frame 'bottom-count))
-         (setf (pane-needs-redisplay bp) t))))))
+;;; No custom key handler needed — scrolling is handled by the event loop.
+;;; Other keys are ignored.
 
 (defun run ()
   (let* ((port (make-instance 'clim-charmed::charmed-port

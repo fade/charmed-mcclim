@@ -12,7 +12,14 @@
   ((screen :initform nil :accessor charmed-port-screen)
    (terminal-mode :initform nil :accessor charmed-port-terminal-mode)
    (raw-mode-p :initform nil :accessor charmed-port-raw-mode-p)
-   (modifier-state :initform 0 :accessor charmed-port-modifier-state))
+   (modifier-state :initform 0 :accessor charmed-port-modifier-state)
+   (scroll-offsets :initform (make-hash-table :test #'eq)
+                   :accessor charmed-port-scroll-offsets
+                   :documentation "Per-pane vertical scroll offsets (pane → integer).")
+   (viewport-sizes :initform (make-hash-table :test #'eq)
+                   :accessor charmed-port-viewport-sizes
+                   :documentation "Per-pane allocated viewport sizes (pane → (width . height))."))
+
   (:default-initargs :pointer (make-instance 'standard-pointer)))
 
 (defmethod find-port-type ((type (eql :charmed)))

@@ -4,7 +4,7 @@
 **Author:** Glenn Thompson  
 **Project:** `charmed-mcclim`  
 **Language:** Common Lisp  
-**Status:** Phases 1–5a complete; Phase 6 (McCLIM backend) in progress  
+**Status:** Phases 1–5a complete; Phase 6 (McCLIM backend) in progress — scrolling, clipping, and focus cycling working  
 
 ---
 
@@ -1091,7 +1091,7 @@ McCLIM stores sheet children in reverse order — border drawing checks
 | File | Description |
 |---|---|
 | `test-hello.lisp` | Single-pane hello world with Ctrl-Q exit |
-| `test-multi-pane.lisp` | Two vertically stacked panes with separator, interactive keypress counter |
+| `test-multi-pane.lisp` | Two vertically stacked panes with scrolling, focus cycling, and scroll clamping |
 
 ## Input Focus
 
@@ -1117,12 +1117,88 @@ focused sheet. Our backend uses `port-keyboard-input-focus` directly since
 we bypass McCLIM's event distribution (polling charmed events in the top-level
 loop instead).
 
+## Scrolling and Viewport Clipping
+
+The charmed backend implements per-pane scrolling without McCLIM's native
+`viewport-pane` / `scroller-pane` wrappers (which require full mirror geometry
+support and cause heap exhaustion in our backend).
+
+### Frozen viewport geometry
+
+Before each display cycle, `capture-pane-viewport-sizes` snapshots every
+named `clim-stream-pane`'s layout-allocated screen position and size into a
+hash table on the port (`charmed-port-viewport-sizes`). This frozen geometry
+is used for:
+
+- **Coordinate transforms** — `sheet-to-screen` maps sheet-local coordinates
+  to absolute screen positions using the frozen snapshot, not the live
+  `sheet-region` (which expands as display functions write content)
+- **Clipping** — `pane-screen-bounds` returns the frozen viewport rectangle;
+  all medium draw methods (`medium-draw-text*`, `medium-draw-rectangle*`,
+  `medium-clear-area`) clip output to these bounds
+- **Pane ordering** — `collect-frame-panes` sorts panes by frozen Y position
+  for stable focus cycling order
+
+### Per-pane scroll offset
+
+Each pane has a scroll offset stored in a hash table on the port
+(`charmed-port-scroll-offsets`). The offset is subtracted from Y coordinates
+in `sheet-to-screen`, shifting the pane's content up or down.
+
+- **`scroll-pane`** — adjusts the offset by a delta, clamped to
+  `[0, content-height - viewport-height]` so the pane never scrolls past
+  the last line of content
+- **`pane-content-height`** — measures content height from the pane's
+  `stream-output-history` (or `sheet-region` as fallback)
+- **`pane-height`** — returns the viewport height from frozen geometry
+
+### Pre-clear before redisplay
+
+Before `redisplay-frame-panes`, each pane marked for redisplay has its
+screen area cleared via `charmed:screen-fill-rect`. This prevents stale
+content from previous scroll positions persisting in areas below the
+content (where the pane's output records don't reach).
+
+### Suppressing relayout cascades
+
+McCLIM's `note-space-requirements-changed` on `composite-pane` calls
+`change-space-requirements`, which propagates up the sheet hierarchy and
+triggers relayout + output record replay. For the charmed backend, this
+cascade overwrites fresh display content with stale output records from
+the previous frame.
+
+The fix: a `note-space-requirements-changed` method on `composite-pane`
+that suppresses propagation when the port is a `charmed-port`. The pane's
+own `sheet-region` is still allowed to expand (so we can measure content
+height for scroll clamping), but the relayout cascade is blocked.
+
+### Skipping parent composite rect fills
+
+McCLIM's repaint protocol draws filled background rectangles for parent
+composite sheets (e.g. `vrack-pane`, `outlined-pane`). These full-screen
+clears wipe child pane content. `medium-draw-rectangle*` skips filled
+rects from non-`clim-stream-pane` sheets.
+
+### Line spacing
+
+McCLIM's `stream-vertical-spacing` defaults to 2, which in our 1-cell-per-row
+terminal means 3 rows per line. The `adopt-frame :after` method sets
+`stream-vertical-spacing` to 0 for all `clim-stream-pane` instances.
+
+### Event loop integration
+
+The `charmed-frame-top-level` event loop handles:
+
+- **Tab** — `cycle-focus` advances focus to next pane
+- **Up/Down** — scroll focused pane by 1 line
+- **PgUp/PgDn** — scroll focused pane by one viewport height
+
 ## Known Limitations
 
 - `:scroll-bars t` causes heap exhaustion (viewport/scroller wrappers unsupported)
-- No scrolling / viewport clipping
 - No text cursor tracking for stream output
 - `sheet-native-transformation` is identity — coordinate offsetting handled in medium
+- Header lines scroll with content (no sticky header support yet)
 
 ---
 
