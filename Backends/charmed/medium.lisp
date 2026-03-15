@@ -100,6 +100,15 @@
             (round (* b 255))))))
     (t nil)))
 
+;;; Coordinate transformation - sheet space to screen (mirror) space
+
+(defun sheet-to-screen (medium x y)
+  "Transform sheet-space coordinates to screen coordinates via device transformation."
+  (let ((dt (medium-device-transformation medium)))
+    (if dt
+        (transform-position dt x y)
+        (values x y))))
+
 ;;; Drawing operations
 
 (defmethod medium-draw-text* ((medium charmed-medium) string x y
@@ -112,36 +121,38 @@
       (setf string (etypecase string
                      (character (string string))
                      (string string)))
-      (let* ((start (or start 0))
-             (end (or end (length string)))
-             (text (subseq string start end))
-             (col (round x))
-             (row (round y))
-             ;; Adjust for alignment
-             (col (case align-x
-                    (:right (- col (length text)))
-                    (:center (- col (floor (length text) 2)))
-                    (otherwise col)))
-             (ink (medium-ink medium))
-             (fg (ink-to-charmed-fg ink)))
-        (if fg
-            (let ((style (charmed:make-style :fg fg)))
-              (charmed:screen-write-string screen col row text
-                                           :style style))
-            (charmed:screen-write-string screen col row text))))))
+      (multiple-value-bind (sx sy) (sheet-to-screen medium x y)
+        (let* ((start (or start 0))
+               (end (or end (length string)))
+               (text (subseq string start end))
+               (col (round sx))
+               (row (round sy))
+               ;; Adjust for alignment
+               (col (case align-x
+                      (:right (- col (length text)))
+                      (:center (- col (floor (length text) 2)))
+                      (otherwise col)))
+               (ink (medium-ink medium))
+               (fg (ink-to-charmed-fg ink)))
+          (if fg
+              (let ((style (charmed:make-style :fg fg)))
+                (charmed:screen-write-string screen col row text
+                                             :style style))
+              (charmed:screen-write-string screen col row text)))))))
 
 (defmethod medium-draw-point* ((medium charmed-medium) x y)
   (let ((screen (medium-screen medium)))
     (when screen
-      (let ((col (round x))
-            (row (round y))
-            (ink (medium-ink medium))
-            (fg nil))
-        (setf fg (ink-to-charmed-fg ink))
-        (if fg
-            (charmed:screen-set-cell screen col row #\·
-                                     :style (charmed:make-style :fg fg))
-            (charmed:screen-set-cell screen col row #\·))))))
+      (multiple-value-bind (sx sy) (sheet-to-screen medium x y)
+        (let ((col (round sx))
+              (row (round sy))
+              (ink (medium-ink medium))
+              (fg nil))
+          (setf fg (ink-to-charmed-fg ink))
+          (if fg
+              (charmed:screen-set-cell screen col row #\·
+                                       :style (charmed:make-style :fg fg))
+              (charmed:screen-set-cell screen col row #\·)))))))
 
 (defmethod medium-draw-points* ((medium charmed-medium) coord-seq)
   (loop for i below (length coord-seq) by 2
@@ -152,32 +163,32 @@
 (defmethod medium-draw-line* ((medium charmed-medium) x1 y1 x2 y2)
   (let ((screen (medium-screen medium)))
     (when screen
-      ;; Simple terminal line drawing: horizontal or vertical lines
-      ;; using box-drawing chars, diagonal lines approximated
-      (let ((col1 (round x1)) (row1 (round y1))
-            (col2 (round x2)) (row2 (round y2))
-            (ink (medium-ink medium))
-            (fg nil))
-        (setf fg (ink-to-charmed-fg ink))
-        (cond
-          ;; Horizontal line
-          ((= row1 row2)
-           (let ((c1 (min col1 col2))
-                 (c2 (max col1 col2)))
-             (loop for c from c1 to c2
-                   do (if fg
-                          (charmed:screen-set-cell screen c row1 #\─
-                                                   :style (charmed:make-style :fg fg))
-                          (charmed:screen-set-cell screen c row1 #\─)))))
-          ;; Vertical line
-          ((= col1 col2)
-           (let ((r1 (min row1 row2))
-                 (r2 (max row1 row2)))
-             (loop for r from r1 to r2
-                   do (if fg
-                          (charmed:screen-set-cell screen col1 r #\│
-                                                   :style (charmed:make-style :fg fg))
-                          (charmed:screen-set-cell screen col1 r #\│))))))))))
+      (multiple-value-bind (sx1 sy1) (sheet-to-screen medium x1 y1)
+        (multiple-value-bind (sx2 sy2) (sheet-to-screen medium x2 y2)
+          (let ((col1 (round sx1)) (row1 (round sy1))
+                (col2 (round sx2)) (row2 (round sy2))
+                (ink (medium-ink medium))
+                (fg nil))
+            (setf fg (ink-to-charmed-fg ink))
+            (cond
+              ;; Horizontal line
+              ((= row1 row2)
+               (let ((c1 (min col1 col2))
+                     (c2 (max col1 col2)))
+                 (loop for c from c1 to c2
+                       do (if fg
+                              (charmed:screen-set-cell screen c row1 #\─
+                                                       :style (charmed:make-style :fg fg))
+                              (charmed:screen-set-cell screen c row1 #\─)))))
+              ;; Vertical line
+              ((= col1 col2)
+               (let ((r1 (min row1 row2))
+                     (r2 (max row1 row2)))
+                 (loop for r from r1 to r2
+                       do (if fg
+                              (charmed:screen-set-cell screen col1 r #\│
+                                                       :style (charmed:make-style :fg fg))
+                              (charmed:screen-set-cell screen col1 r #\│))))))))))))
 
 (defmethod medium-draw-lines* ((medium charmed-medium) coord-seq)
   (let ((tr (invert-transformation (medium-transformation medium))))
@@ -198,41 +209,37 @@
                                    left top right bottom filled)
   (let ((screen (medium-screen medium)))
     (when screen
-      (let ((c1 (round left))  (r1 (round top))
-            (c2 (round right)) (r2 (round bottom))
-            (ink (medium-ink medium))
-            (fg nil))
-        (setf fg (ink-to-charmed-fg ink))
-        (if filled
-            ;; Fill rectangle - for terminal, if no explicit color just
-            ;; clear with spaces (terminal default background)
-            (let ((bg (ink-to-charmed-bg ink)))
-              (if (or fg bg)
-                  (let ((style (charmed:make-style :fg fg :bg bg)))
-                    (loop for r from r1 below r2
-                          do (loop for c from c1 below c2
-                                   do (charmed:screen-set-cell
-                                       screen c r #\Space :style style))))
-                  ;; No explicit colors — clear to terminal default
-                  (loop for r from r1 below r2
-                        do (loop for c from c1 below c2
-                                 do (charmed:screen-set-cell
-                                     screen c r #\Space)))))
-            ;; Draw border using box characters
-            (progn
-              ;; Top and bottom edges
-              (loop for c from (1+ c1) below c2
-                    do (charmed:screen-set-cell screen c r1 #\─)
-                       (charmed:screen-set-cell screen c r2 #\─))
-              ;; Left and right edges
-              (loop for r from (1+ r1) below r2
-                    do (charmed:screen-set-cell screen c1 r #\│)
-                       (charmed:screen-set-cell screen c2 r #\│))
-              ;; Corners
-              (charmed:screen-set-cell screen c1 r1 #\┌)
-              (charmed:screen-set-cell screen c2 r1 #\┐)
-              (charmed:screen-set-cell screen c1 r2 #\└)
-              (charmed:screen-set-cell screen c2 r2 #\┘)))))))
+      (multiple-value-bind (sl st) (sheet-to-screen medium left top)
+        (multiple-value-bind (sr sb) (sheet-to-screen medium right bottom)
+          (let* ((c1 (round sl))  (r1 (round st))
+                 (c2 (round sr)) (r2 (round sb))
+                 (ink (medium-ink medium))
+                 (fg (ink-to-charmed-fg ink)))
+            (if filled
+                ;; Fill rectangle
+                (let ((bg (ink-to-charmed-bg ink)))
+                  (if (or fg bg)
+                      (let ((style (charmed:make-style :fg fg :bg bg)))
+                        (loop for r from r1 below r2
+                              do (loop for c from c1 below c2
+                                       do (charmed:screen-set-cell
+                                           screen c r #\Space :style style))))
+                      (loop for r from r1 below r2
+                            do (loop for c from c1 below c2
+                                     do (charmed:screen-set-cell
+                                         screen c r #\Space)))))
+                ;; Draw border using box characters
+                (progn
+                  (loop for c from (1+ c1) below c2
+                        do (charmed:screen-set-cell screen c r1 #\─)
+                           (charmed:screen-set-cell screen c r2 #\─))
+                  (loop for r from (1+ r1) below r2
+                        do (charmed:screen-set-cell screen c1 r #\│)
+                           (charmed:screen-set-cell screen c2 r #\│))
+                  (charmed:screen-set-cell screen c1 r1 #\┌)
+                  (charmed:screen-set-cell screen c2 r1 #\┐)
+                  (charmed:screen-set-cell screen c1 r2 #\└)
+                  (charmed:screen-set-cell screen c2 r2 #\┘)))))))))
 
 (defmethod medium-draw-rectangles* ((medium charmed-medium) position-seq filled)
   (loop for i below (length position-seq) by 4
@@ -291,11 +298,13 @@
 (defmethod medium-clear-area ((medium charmed-medium) left top right bottom)
   (let ((screen (medium-screen medium)))
     (when screen
-      (let ((c1 (max 0 (round left)))  (r1 (max 0 (round top)))
-            (c2 (round right)) (r2 (round bottom)))
-        (when (and (> c2 c1) (> r2 r1))
-          (charmed:screen-fill-rect screen c1 r1
-                                    (- c2 c1) (- r2 r1)))))))
+      (multiple-value-bind (sl st) (sheet-to-screen medium left top)
+        (multiple-value-bind (sr sb) (sheet-to-screen medium right bottom)
+          (let ((c1 (max 0 (round sl)))  (r1 (max 0 (round st)))
+                (c2 (round sr)) (r2 (round sb)))
+            (when (and (> c2 c1) (> r2 r1))
+              (charmed:screen-fill-rect screen c1 r1
+                                        (- c2 c1) (- r2 r1)))))))))
 
 (defmethod medium-beep ((medium charmed-medium))
   (write-char #\Bel *terminal-io*)

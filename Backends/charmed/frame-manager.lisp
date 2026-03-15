@@ -32,6 +32,49 @@
       (setf (sheet-enabled-p tls) t)
       (layout-frame frame (first size) (second size)))))
 
+;;; Draw horizontal separator lines between sibling panes.
+(defun sheet-screen-y (sheet)
+  "Compute the screen Y coordinate of a sheet by walking up the parent chain,
+accumulating sheet-transformation offsets.  Stops at grafts."
+  (let ((y 0))
+    (loop for s = sheet then (sheet-parent s)
+          while (and s (not (graftp s)))
+          do (handler-case
+                 (let ((tr (sheet-transformation s)))
+                   (when tr
+                     (multiple-value-bind (tx ty) (transform-position tr 0 0)
+                       (declare (ignore tx))
+                       (incf y ty))))
+               (error () (return))))
+    y))
+
+(defun draw-pane-borders (frame port)
+  "Draw horizontal separator lines between panes in the frame."
+  (let* ((screen (charmed-port-screen port))
+         (tls (frame-top-level-sheet frame)))
+    (when (and screen tls)
+      (let ((width (first (charmed:terminal-size))))
+        ;; Find the inner vrack (vertically pane) and draw separators
+        ;; between its direct children.
+        (labels ((find-vrack-children (sheet)
+                   (when (typep sheet 'sheet-parent-mixin)
+                     (let ((children (sheet-children sheet)))
+                       (if (and (>= (length children) 2)
+                                (let ((y0 (sheet-screen-y (first children)))
+                                      (y1 (sheet-screen-y (second children))))
+                                  (> (abs (- y1 y0)) 1)))
+                           children
+                           (loop for child in children
+                                 for result = (find-vrack-children child)
+                                 when result return result))))))
+          (let ((children (find-vrack-children tls)))
+            (when children
+              (dolist (child children)
+                (let ((sy (round (sheet-screen-y child))))
+                  (when (> sy 0)
+                    (loop for c from 0 below width
+                          do (charmed:screen-set-cell screen c sy #\─))))))))))))
+
 ;;; Custom frame top-level for charmed.
 ;;; Use as :top-level (charmed-frame-top-level) in define-application-frame.
 ;;; This runs inside run-frame-top-level :around which handles frame-exit.
@@ -41,6 +84,7 @@
          (port (port fm)))
     ;; Initial display
     (redisplay-frame-panes frame :force-p t)
+    (draw-pane-borders frame port)
     (port-force-output port)
     ;; Event loop
     (loop
@@ -64,6 +108,7 @@
                 (move-and-resize-sheet tls 0 0 (first size) (second size))
                 (layout-frame frame (first size) (second size))
                 (redisplay-frame-panes frame :force-p t)
+                (draw-pane-borders frame port)
                 (port-force-output port)))))))))
 
 (defmethod note-space-requirements-changed :after ((graft charmed-graft) pane)
