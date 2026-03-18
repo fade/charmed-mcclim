@@ -388,6 +388,10 @@ first frame's top-level-sheet, or the graft."
           (if (and frame (charmed-frame-wants-raw-keys-p frame))
               ;; Raw mode: queue directly to frame's event queue
               (let ((queue (climi::frame-event-queue frame)))
+                (with-open-file (log "/tmp/charmed-browse.log" :direction :output
+                                     :if-exists :append :if-does-not-exist :create)
+                  (format log "RAW-KEY: ~A queue=~A~%" 
+                          (keyboard-event-key-name event) (type-of queue)))
                 (when queue
                   (climi::queue-append queue event)))
               ;; Normal mode: dispatch to focused pane for DREI
