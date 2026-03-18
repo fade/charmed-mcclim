@@ -378,18 +378,20 @@ first frame's top-level-sheet, or the graft."
     ;; Intercept terminal-specific keys (Ctrl-Tab, PgUp/PgDn)
     (when (charmed-intercept-key-event port event)
       (return-from distribute-event))
-    ;; Route key events to the focused pane's event queue so that
-    ;; stream-read-gesture (DREI input editing) can dequeue them.
-    ;; The default distribute-event uses mirror-based sheet traversal
-    ;; which doesn't work for the charmed backend.
+    ;; Route key events appropriately.
+    ;; When the frame wants raw keys (e.g. browse mode), queue to the
+    ;; frame's event queue so read-frame-command can dequeue them directly.
+    ;; Otherwise, dispatch to the focused pane for DREI input editing.
     (let ((focused (port-keyboard-input-focus port)))
       (when focused
-        ;; DEBUG: log dispatch
-        (with-open-file (log "/tmp/charmed-dispatch.log" :direction :output
-                             :if-exists :append :if-does-not-exist :create)
-          (format log "DISPATCH: key=~A to ~A~%" 
-                  (keyboard-event-key-name event) (type-of focused)))
-        (dispatch-event focused event)))
+        (let ((frame (pane-frame focused)))
+          (if (and frame (charmed-frame-wants-raw-keys-p frame))
+              ;; Raw mode: queue directly to frame's event queue
+              (let ((queue (climi::frame-event-queue frame)))
+                (when queue
+                  (climi::queue-append queue event)))
+              ;; Normal mode: dispatch to focused pane for DREI
+              (dispatch-event focused event)))))
     (return-from distribute-event))
   ;; For pointer events, bypass the mirror-based sheet traversal.
   ;; Our mouse events already have the correct target pane and
