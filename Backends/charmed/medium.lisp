@@ -348,7 +348,13 @@
           ;; Track end-of-text for cursor positioning during input editing.
           (when (and port (plusp (length clipped-text)))
             (setf (gethash sheet (charmed-port-last-draw-end port))
-                  (cons (+ col (length clipped-text)) row))))))))
+                  (cons (+ col (length clipped-text)) row))
+            ;; Flush immediately when DREI is editing so each keystroke
+            ;; echo is visible without waiting for the next event cycle.
+            (let ((frame (pane-frame sheet)))
+              (when (and frame (climi::frame-reading-command-p frame))
+                (update-terminal-cursor port)
+                (charmed:screen-present screen)))))))))
 
 (defmethod medium-draw-text* ((medium charmed-medium) string x y
                               start end
