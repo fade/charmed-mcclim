@@ -42,9 +42,9 @@
   McCLIM's structured input dialogs. Needs form-style field editing
   in the terminal.
 
-- [ ] **`horizontally` layout**
-  Only `vertically` is tested. Side-by-side panes need verification
-  and possibly fixes to border drawing and coordinate transforms.
+- [x] **`horizontally` layout**
+  Side-by-side panes working with vertical separator lines (`┃`).
+  `draw-pane-borders` handles `hrack-pane`. Test: `test-hsplit.lisp`.
 
 - [ ] **Drawing operations**
   Lines, ellipses, polygons are stubbed or basic. Terminal can do
@@ -52,9 +52,11 @@
   Need at least: `medium-draw-line*` using box-drawing chars,
   better `medium-draw-polygon*` stub.
 
-- [ ] **Update API.md**
-  API.md currently documents the old charmed-mcclim CLIM-inspired API.
-  Needs to be rewritten to document the McCLIM backend API.
+- [x] **Update API.md**
+  Rewritten to document the McCLIM backend API: all backend classes (port,
+  medium, graft, frame-manager), event processing, scrolling, focus, pane
+  borders, presentation clicking, key handling, raw key mode, partial command
+  parser, text cursor tracking, terminal metrics fallbacks, and test applications.
 
 ## Exit Criteria (Phase 6)
 

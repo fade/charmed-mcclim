@@ -15,16 +15,20 @@ Built on `charmed`, a pure-Lisp ANSI terminal library with double-buffered rende
 - **Full McCLIM backend** — port, graft, medium, frame-manager classes
 - **McCLIM Listener** — Lisp eval, describe, package commands working
 - **Presentation clicking** — mouse clicks on presented objects invoke translators
-- **Multi-pane layout** — `vertically` composition with automatic resize
+- **Multi-pane layout** — `vertically` and `horizontally` composition with automatic resize
+- **Pane borders** — horizontal (`━`) and vertical (`┃`) separator lines between panes, focused pane highlighted in green
 - **Command processing** — `default-frame-top-level`, `accept`/`present`, DREI input editor
+- **Partial command parser** — terminal-friendly argument prompting for keystroke-invoked commands (replaces GUI `accepting-values` dialog)
 - **Per-pane scrolling** — Up/Down/PgUp/PgDn with scroll clamping
 - **Auto-scroll** — new output automatically scrolls panes to bottom
 - **Focus cycling** — Tab moves between panes with visual indicator
+- **Raw key mode** — `charmed-frame-wants-raw-keys-p` lets frames receive arrow/scroll keys directly for custom navigation
 - **Text styles** — bold, italic, dim, underline mapped to terminal attributes
 - **Color support** — CLIM inks mapped to terminal colors (RGB, named, indirect)
 - **Terminal resize** — automatic relayout on SIGWINCH
-- **Click-to-focus** — mouse click on a pane focuses it
+- **Presentation clicking preserves focus** — mouse click on a presentation invokes the translator without changing keyboard focus (interactor remains active for command processing)
 - **Terminal restoration** — always cleans up on exit or crash
+- **Basic-medium fallbacks** — terminal metrics and drawing work correctly even for panes that receive a `basic-medium` from nested layout composites
 
 ### CLIM-Inspired Framework (Phases 1–5)
 
@@ -51,21 +55,23 @@ The project also includes a standalone CLIM-inspired framework (`src/`) with its
 
 | File | Description |
 |---|---|
-| `Backends/charmed/test-presentations.lisp` | Clickable fruit list — demonstrates presentation translators |
-| `Backends/charmed/test-listener.lisp` | Terminal Lisp Listener with eval, describe, help |
-| `Backends/charmed/test-real-listener.lisp` | Runs the real McCLIM Listener in terminal |
-| `Backends/charmed/test-interactor.lisp` | McCLIM command input with argument prompting |
-| `Backends/charmed/test-multi-pane.lisp` | Two-pane scrolling and focus demo |
 | `Backends/charmed/test-hello.lisp` | Single-pane hello world |
+| `Backends/charmed/test-multi-pane.lisp` | Two vertically stacked panes with scrolling, focus, text styles, colors |
+| `Backends/charmed/test-hsplit.lisp` | Horizontal split — two side-by-side panes with vertical separator |
+| `Backends/charmed/test-interactor.lisp` | McCLIM command input with argument prompting |
+| `Backends/charmed/test-presentations.lisp` | Clickable fruit list — presentation translators, mouse click → command |
+| `Backends/charmed/test-listener.lisp` | Terminal Lisp Listener with eval, describe, package, help |
+| `Backends/charmed/test-real-listener.lisp` | Runs the real McCLIM Listener in terminal |
 
 ## Dependencies
 
 - [charmed](https://github.com/parenworks/charmed) — terminal substrate (pure Lisp, no ncurses)
 - [McCLIM](https://github.com/McCLIM/McCLIM) — Common Lisp Interface Manager
-- [alexandria](https://gitlab.common-lisp.net/alexandria/alexandria) — utilities
+- [alexandria](https://gitlab.common-lisp.net/alexandria/alexandria) — utilities (used by the legacy CLIM-inspired framework in `src/`)
 
 ## Documentation
 
+- **[docs/API.md](docs/API.md)** — McCLIM backend API reference (port, medium, graft, frame-manager, event processing, scrolling, focus, presentations)
 - **[DESIGN.md](DESIGN.md)** — Architecture, coordinate pipeline, event model, and implementation details
 - **[TODO.md](TODO.md)** — Current status and remaining work
 - **[examples/README.md](examples/README.md)** — CLIM-inspired framework examples (Phases 1–5)

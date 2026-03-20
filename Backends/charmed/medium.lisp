@@ -11,6 +11,14 @@
   ())
 
 ;;; Text style metrics - terminal is monospace, 1 char = 1 unit
+;;; These are defined for charmed-medium, but we also provide :around
+;;; methods on basic-medium so that panes stuck with basic-medium on a
+;;; charmed-port still get terminal metrics.
+
+(defun charmed-port-medium-p (medium)
+  "True if MEDIUM is attached to a sheet on a charmed-port."
+  (let ((sheet (medium-sheet medium)))
+    (and sheet (typep (port sheet) 'charmed-port))))
 
 (defmethod text-style-ascent (text-style (medium charmed-medium))
   (declare (ignore text-style))
@@ -52,6 +60,46 @@
       (text-size medium string :text-style text-style :start start :end end)
     (declare (ignore baseline))
     (values x y (+ x width) (+ y height) width 0)))
+
+;;; Fallback metrics for basic-medium on charmed-port sheets.
+;;; Without these, McCLIM's default pixel-based metrics cause wildly
+;;; wrong text positioning in the terminal.
+
+(defmethod text-style-ascent :around (text-style (medium basic-medium))
+  (if (charmed-port-medium-p medium) 0 (call-next-method)))
+
+(defmethod text-style-descent :around (text-style (medium basic-medium))
+  (if (charmed-port-medium-p medium) 1 (call-next-method)))
+
+(defmethod text-style-height :around (text-style (medium basic-medium))
+  (if (charmed-port-medium-p medium) 1 (call-next-method)))
+
+(defmethod text-style-character-width :around (text-style (medium basic-medium) char)
+  (if (charmed-port-medium-p medium) 1 (call-next-method)))
+
+(defmethod text-style-width :around (text-style (medium basic-medium))
+  (if (charmed-port-medium-p medium) 1 (call-next-method)))
+
+(defmethod text-size :around
+    ((medium basic-medium) string &key text-style (start 0) end)
+  (if (charmed-port-medium-p medium)
+      (progn
+        (setf string (etypecase string
+                       (character (string string))
+                       (string string)))
+        (let* ((end (or end (length string)))
+               (len (- end start)))
+          (values len 1 len 0 1)))
+      (call-next-method)))
+
+(defmethod climb:text-bounding-rectangle* :around
+    ((medium basic-medium) string &key text-style (start 0) end)
+  (if (charmed-port-medium-p medium)
+      (multiple-value-bind (width height x y baseline)
+          (text-size medium string :text-style text-style :start start :end end)
+        (declare (ignore baseline))
+        (values x y (+ x width) (+ y height) width 0))
+      (call-next-method)))
 
 ;;; Helper to get the charmed screen from the medium's port
 
@@ -263,6 +311,39 @@
 
 ;;; Drawing operations
 
+(defun charmed-draw-text (medium screen string x y start end align-x)
+  "Shared text drawing logic for any medium on a charmed-port sheet."
+  (setf string (etypecase string
+                 (character (string string))
+                 (string string)))
+  (multiple-value-bind (sx sy) (sheet-to-screen medium x y)
+    (let* ((start (or start 0))
+           (end (or end (length string)))
+           (text (subseq string start end))
+           (col (round sx))
+           (row (round sy))
+           ;; Adjust for alignment
+           (col (case align-x
+                  (:right (- col (length text)))
+                  (:center (- col (floor (length text) 2)))
+                  (otherwise col)))
+           (sheet (medium-sheet medium))
+           (port (port sheet))
+           (len (length text))
+           (style (text-style-to-charmed-style medium)))
+      (with-clipping (medium col row :width len)
+        (let ((clipped-text (if (< len (length text))
+                                (subseq text 0 len)
+                                text)))
+          (if style
+              (charmed:screen-write-string screen col row clipped-text
+                                           :style style)
+              (charmed:screen-write-string screen col row clipped-text))
+          ;; Track end-of-text for cursor positioning during input editing.
+          (when (and port (plusp (length clipped-text)))
+            (setf (gethash sheet (charmed-port-last-draw-end port))
+                  (cons (+ col (length clipped-text)) row))))))))
+
 (defmethod medium-draw-text* ((medium charmed-medium) string x y
                               start end
                               align-x align-y
@@ -270,36 +351,24 @@
   (declare (ignore align-y toward-x toward-y transform-glyphs))
   (let ((screen (medium-screen medium)))
     (when screen
-      (setf string (etypecase string
-                     (character (string string))
-                     (string string)))
-      (multiple-value-bind (sx sy) (sheet-to-screen medium x y)
-        (let* ((start (or start 0))
-               (end (or end (length string)))
-               (text (subseq string start end))
-               (col (round sx))
-               (row (round sy))
-               ;; Adjust for alignment
-               (col (case align-x
-                      (:right (- col (length text)))
-                      (:center (- col (floor (length text) 2)))
-                      (otherwise col)))
-               (sheet (medium-sheet medium))
-               (port (port sheet))
-               (len (length text))
-               (style (text-style-to-charmed-style medium)))
-          (with-clipping (medium col row :width len)
-            (let ((clipped-text (if (< len (length text))
-                                    (subseq text 0 len)
-                                    text)))
-              (if style
-                  (charmed:screen-write-string screen col row clipped-text
-                                               :style style)
-                  (charmed:screen-write-string screen col row clipped-text))
-              ;; Track end-of-text for cursor positioning during input editing.
-              (when (and port (plusp (length clipped-text)))
-                (setf (gethash sheet (charmed-port-last-draw-end port))
-                      (cons (+ col (length clipped-text)) row))))))))))
+      (charmed-draw-text medium screen string x y start end align-x))))
+
+;;; Catch-all: any basic-medium on a charmed-port sheet should draw to the
+;;; charmed screen.  This handles panes inside nested layout composites
+;;; (e.g. hrack-pane) that get a basic-medium from McCLIM's standard
+;;; framework instead of charmed-medium.
+(defmethod medium-draw-text* :around ((medium basic-medium) string x y
+                                      start end
+                                      align-x align-y
+                                      toward-x toward-y transform-glyphs)
+  (let* ((sheet (medium-sheet medium))
+         (port (when sheet (port sheet))))
+    (if (and port (typep port 'charmed-port)
+             (not (typep medium 'charmed-medium)))
+        (let ((screen (charmed-port-screen port)))
+          (when screen
+            (charmed-draw-text medium screen string x y start end align-x)))
+        (call-next-method))))
 
 (defmethod medium-draw-point* ((medium charmed-medium) x y)
   (let ((screen (medium-screen medium)))
