@@ -16,6 +16,9 @@
    (scroll-offsets :initform (make-hash-table :test #'eq)
                    :accessor charmed-port-scroll-offsets
                    :documentation "Per-pane vertical scroll offsets (pane → integer).")
+   (scroll-modes :initform (make-hash-table :test #'eq)
+                 :accessor charmed-port-scroll-modes
+                 :documentation "Per-pane scroll mode (pane → :auto or :manual). :auto follows new output, :manual preserves user scroll position.")
    (viewport-sizes :initform (make-hash-table :test #'eq)
                    :accessor charmed-port-viewport-sizes
                    :documentation "Per-pane allocated viewport sizes (pane → (width . height)).")
@@ -82,18 +85,18 @@
   (declare (ignore sheet))
   (bounding-rectangle* region))
 
-;;; Event processing - polls charmed for terminal input
-(defmethod process-next-event ((port charmed-port) &key wait-function (timeout nil))
-  ;; Check wait-function first
-  (when (maybe-funcall wait-function)
-    (return-from process-next-event (values nil :wait-function)))
-  ;; Check for resize
+;;; Unified terminal resize handler.
+;;; Called from both the initial resize check and the polling loop.
+(defun %handle-terminal-resize (port)
+  "Handle terminal resize: resize screen, relayout all frames, redisplay.
+   Returns T if resize was handled, NIL otherwise."
   (let ((resize-key (charmed:poll-resize)))
     (when resize-key
       (let* ((size (charmed:terminal-size))
              (width (first size))
              (height (second size))
              (screen (charmed-port-screen port)))
+        ;; Resize the charmed screen buffer
         (when screen
           (charmed:screen-resize screen width height))
         ;; Relayout all frames at the new terminal size
@@ -102,12 +105,26 @@
             (dolist (frame (frame-manager-frames fm))
               (let ((tls (frame-top-level-sheet frame)))
                 (when tls
+                  ;; Resize and move top-level sheet to fill terminal
                   (move-and-resize-sheet tls 0 0 width height)
+                  ;; Relayout panes within the frame
                   (layout-frame frame width height)
+                  ;; Recapture viewport geometry after layout
                   (capture-pane-viewport-sizes frame port)
+                  ;; Force full redisplay
                   (redisplay-frame-panes frame :force-p t)
+                  ;; Flush to terminal
                   (port-force-output port))))))
-        (return-from process-next-event t))))
+        t))))
+
+;;; Event processing - polls charmed for terminal input
+(defmethod process-next-event ((port charmed-port) &key wait-function (timeout nil))
+  ;; Check wait-function first
+  (when (maybe-funcall wait-function)
+    (return-from process-next-event (values nil :wait-function)))
+  ;; Check for resize at start of event processing
+  (when (%handle-terminal-resize port)
+    (return-from process-next-event t))
   ;; Read terminal input with timeout.
   ;; When timeout is nil, block until an event arrives (loop internally).
   ;; When timeout is specified, poll once with that timeout.
@@ -148,24 +165,8 @@
         (t
          ;; No timeout specified and no event yet — keep polling.
          ;; Also check for resize while waiting.
-         (let ((resize-key (charmed:poll-resize)))
-           (when resize-key
-             (let* ((size (charmed:terminal-size))
-                    (width (first size))
-                    (height (second size))
-                    (screen (charmed-port-screen port)))
-               (when screen
-                 (charmed:screen-resize screen width height))
-               (let ((fm (first (slot-value port 'climi::frame-managers))))
-                 (when fm
-                   (dolist (frame (frame-manager-frames fm))
-                     (let ((tls (frame-top-level-sheet frame)))
-                       (when tls
-                         (layout-frame frame width height)
-                         (capture-pane-viewport-sizes frame port)
-                         (redisplay-frame-panes frame :force-p t)
-                         (port-force-output port))))))
-               (return t)))))))))  ;; let*/when/let/t-case/cond/let*/loop
+         (when (%handle-terminal-resize port)
+           (return t)))))))  ;; cond/let*/loop
 
 ;;; Translate a charmed key-event into a McCLIM event
 

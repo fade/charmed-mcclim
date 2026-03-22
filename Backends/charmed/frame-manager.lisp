@@ -355,8 +355,19 @@ accumulating sheet-transformation offsets.  Stops at grafts."
                   0))))
     (error () 0)))
 
+;;; Scroll mode: :auto follows new output, :manual preserves user position.
+(defun pane-scroll-mode (port pane)
+  "Return the scroll mode for PANE: :auto or :manual. Default is :auto."
+  (or (gethash pane (charmed-port-scroll-modes port)) :auto))
+
+(defun (setf pane-scroll-mode) (mode port pane)
+  "Set the scroll mode for PANE to MODE (:auto or :manual)."
+  (setf (gethash pane (charmed-port-scroll-modes port)) mode))
+
 (defun scroll-pane (port pane delta)
-  "Adjust PANE's scroll offset by DELTA rows. Clamps to valid range."
+  "Adjust PANE's scroll offset by DELTA rows. Clamps to valid range.
+   Scrolling up (negative delta) switches to :manual mode.
+   Reaching max-scroll switches back to :auto mode."
   (when pane
     (let* ((current (pane-scroll-offset port pane))
            (vh (pane-height pane))
@@ -365,7 +376,15 @@ accumulating sheet-transformation offsets.  Stops at grafts."
            (new-offset (max 0 (min max-scroll (+ current delta)))))
       (unless (= current new-offset)
         (setf (pane-scroll-offset port pane) new-offset)
-        (setf (pane-needs-redisplay pane) t)))))
+        (setf (pane-needs-redisplay pane) t)
+        ;; Update scroll mode based on direction and position
+        (cond
+          ;; Scrolling up (negative delta) → manual mode
+          ((< delta 0)
+           (setf (pane-scroll-mode port pane) :manual))
+          ;; Reached bottom → back to auto mode
+          ((>= new-offset max-scroll)
+           (setf (pane-scroll-mode port pane) :auto)))))))
 
 ;;; Compute pane viewport height for page scroll.
 ;;; Uses captured viewport geometry so it reflects layout allocation, not content size.
@@ -594,17 +613,19 @@ accumulating sheet-transformation offsets.  Stops at grafts."
   (let* ((fm (frame-manager frame))
          (port (when fm (port fm))))
     (when (and port (typep port 'charmed-port))
-      ;; Auto-scroll: for each pane whose content exceeds the viewport,
-      ;; scroll to show the bottom (latest output).
+      ;; Auto-scroll: for panes in :auto mode whose content exceeds the
+      ;; viewport, scroll to show the bottom (latest output).
+      ;; Panes in :manual mode preserve user scroll position.
       (dolist (pane (collect-frame-panes frame))
         (handler-case
-            (let ((content-h (pane-content-height pane))
-                  (vh (pane-height pane)))
-              (when (> content-h vh)
-                (let ((max-scroll (- content-h vh))
-                      (current (pane-scroll-offset port pane)))
-                  (when (< current max-scroll)
-                    (setf (pane-scroll-offset port pane) max-scroll)))))
+            (when (eq (pane-scroll-mode port pane) :auto)
+              (let ((content-h (pane-content-height pane))
+                    (vh (pane-height pane)))
+                (when (> content-h vh)
+                  (let ((max-scroll (- content-h vh))
+                        (current (pane-scroll-offset port pane)))
+                    (when (< current max-scroll)
+                      (setf (pane-scroll-offset port pane) max-scroll))))))
           (error () nil)))
       (port-force-output port))))
 
