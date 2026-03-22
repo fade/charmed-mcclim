@@ -569,14 +569,9 @@
   (frob charmed-pixmap charmed-pixmap))
 
 ;;; Output control
-
-(defmethod medium-finish-output ((medium charmed-medium))
-  (let ((screen (medium-screen medium)))
-    (when screen
-      (charmed:screen-present screen))))
-
-(defmethod medium-force-output ((medium charmed-medium))
-  (medium-finish-output medium))
+;;; Note: medium-finish-output and medium-force-output for charmed-medium
+;;; are defined later in this file (after the text cursor section) with
+;;; proper throttling and cursor update logic.
 
 (defmethod medium-clear-area ((medium charmed-medium) left top right bottom)
   (let ((screen (medium-screen medium)))
