@@ -7,4 +7,5 @@
            #:charmed-port
            #:charmed-medium
            #:charmed-frame-manager
-           #:charmed-frame-wants-raw-keys-p))
+           #:charmed-frame-wants-raw-keys-p
+           #:charmed-active-pane))

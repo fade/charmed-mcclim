@@ -230,76 +230,114 @@ accumulating sheet-transformation offsets.  Stops at grafts."
         (dolist (p panes)
           (setf (pane-needs-redisplay p) t))))))
 
-;;; Check whether a layout child contains the focused sheet.
-(defun child-contains-focused-p (child port)
-  "Return T if CHILD is or contains the port's focused sheet."
-  (let ((focused (port-keyboard-input-focus port)))
-    (and focused
-         (loop for s = focused then (sheet-parent s)
+;;; Active pane protocol — apps specialize charmed-active-pane to
+;;; control which pane's separators are highlighted.  Falls back to
+;;; port-keyboard-input-focus when no method is defined.
+(defgeneric charmed-active-pane (frame)
+  (:documentation "Return the pane that should be highlighted as active.
+   Applications should specialize this on their frame class.
+   The default returns NIL, falling back to port-keyboard-input-focus.")
+  (:method ((frame t)) nil))
+
+;;; Check whether a layout child contains the active pane.
+(defun child-contains-active-p (child frame port)
+  "Return T if CHILD is or contains the active pane for FRAME."
+  (let ((active (or (charmed-active-pane frame)
+                    (port-keyboard-input-focus port))))
+    (and active
+         (loop for s = active then (sheet-parent s)
                while s
                thereis (eq s child)))))
 
 (defun draw-pane-borders (frame port)
-  "Draw separator lines between panes in the frame.
+  "Draw separator lines between panes in the frame to indicate focus.
    Horizontal separators (━) between vertically stacked panes,
    vertical separators (┃) between horizontally split panes.
-   The separator adjacent to the focused pane is drawn in green."
+   Separators adjacent to the focused pane are drawn in cyan;
+   all other separators are drawn in dim gray."
   (let* ((screen (charmed-port-screen port))
          (tls (frame-top-level-sheet frame))
          (size (charmed:terminal-size))
          (term-width (first size))
          (term-height (second size))
-         (focus-color (charmed:lookup-color :green)))
+         (focus-color (charmed:lookup-color :cyan))
+         (inactive-color (charmed:lookup-color :bright-black)))
     (when (and screen tls)
-      (labels ((draw-separators (sheet)
-                 (when (typep sheet 'sheet-parent-mixin)
-                   (let ((children (sheet-children sheet)))
-                     (cond
-                       ;; Vertical stack (vrack-pane) — draw horizontal separators
-                       ((typep sheet 'clim:vrack-pane)
-                        (multiple-value-bind (parent-x parent-y)
-                            (sheet-screen-position-xy sheet)
-                          (let* ((parent-col (round parent-x))
-                                 (parent-w (round (bounding-rectangle-width (sheet-region sheet))))
-                                 (col-end (min (+ parent-col parent-w) term-width)))
-                            (dolist (child children)
-                              (multiple-value-bind (sx sy)
-                                  (sheet-screen-position-xy child)
-                                (declare (ignore sx))
-                                (let ((row (round sy)))
-                                  (when (> row (round parent-y))
-                                    (let ((fg (if (child-contains-focused-p child port)
-                                                  focus-color nil)))
-                                      (loop for c from parent-col below col-end
-                                            do (charmed:screen-set-cell screen c row #\━
-                                                                        :fg fg))))))
-                              ;; Recurse into children for nested splits
-                              (draw-separators child)))))
-                       ;; Horizontal split (hrack-pane) — draw vertical separators
-                       ((typep sheet 'clim:hrack-pane)
-                        (multiple-value-bind (parent-x parent-y)
-                            (sheet-screen-position-xy sheet)
-                          (declare (ignore parent-x))
-                          (let* ((parent-row (round parent-y))
-                                 (parent-h (round (bounding-rectangle-height (sheet-region sheet))))
-                                 (row-end (min (+ parent-row parent-h) term-height)))
-                            (dolist (child children)
-                              (multiple-value-bind (sx sy)
-                                  (sheet-screen-position-xy child)
-                                (declare (ignore sy))
-                                (let ((col (round sx)))
-                                  (when (> col 0)
-                                    (let ((fg (if (child-contains-focused-p child port)
-                                                  focus-color nil)))
-                                      (loop for r from parent-row below row-end
-                                            do (charmed:screen-set-cell screen col r #\┃
-                                                                        :fg fg))))))
-                              ;; Recurse into children for nested splits
-                              (draw-separators child)))))
-                       ;; Other composite — just recurse
-                       (t
+      (labels
+          ((draw-h-line (row col-start col-end fg)
+             "Draw a horizontal separator line."
+             (loop for c from col-start below col-end
+                   do (charmed:screen-set-cell screen c row #\━ :fg fg)))
+           (draw-v-line (col row-start row-end fg)
+             "Draw a vertical separator line."
+             (loop for r from row-start below row-end
+                   do (charmed:screen-set-cell screen col r #\┃ :fg fg)))
+           (draw-separators (sheet)
+             (when (typep sheet 'sheet-parent-mixin)
+               (let ((children (sheet-children sheet)))
+                 (cond
+                   ;; Vertical stack (vrack-pane) — draw horizontal separators
+                   ((typep sheet 'clim:vrack-pane)
+                    (multiple-value-bind (parent-x parent-y)
+                        (sheet-screen-position-xy sheet)
+                      (let* ((parent-col (round parent-x))
+                             (parent-w (round (bounding-rectangle-width (sheet-region sheet))))
+                             (col-end (min (+ parent-col parent-w) term-width))
+                             (parent-row (round parent-y))
+                             ;; Build list of (child . active-p), sorted
+                             ;; top-to-bottom by screen Y position so that
+                             ;; "previous" in the loop is always the pane above.
+                             (child-info
+                              (sort (loop for child in children
+                                          collect (cons child
+                                                        (child-contains-active-p child frame port)))
+                                    #'<
+                                    :key (lambda (ci)
+                                           (multiple-value-bind (sx sy)
+                                               (sheet-screen-position-xy (car ci))
+                                             (declare (ignore sx))
+                                             (round sy))))))
+                        ;; Draw separator between each consecutive pair.
+                        ;; The separator sits at the top-edge of the lower child.
+                        ;; Color it cyan only if the child above or below is active.
+                        (loop for prev-entry = nil then entry
+                              for entry in child-info
+                              for child = (car entry)
+                              for active = (cdr entry)
+                              for prev-active = (and prev-entry (cdr prev-entry))
+                              do (multiple-value-bind (sx sy)
+                                     (sheet-screen-position-xy child)
+                                   (declare (ignore sx))
+                                   (let ((row (round sy)))
+                                     (when (> row parent-row)
+                                       (let ((fg (if (or active prev-active)
+                                                     focus-color inactive-color)))
+                                         (draw-h-line row parent-col col-end fg)))))
+                                 ;; Recurse into children for nested splits
+                                 (draw-separators child)))))
+                   ;; Horizontal split (hrack-pane) — draw vertical separators
+                   ((typep sheet 'clim:hrack-pane)
+                    (multiple-value-bind (parent-x parent-y)
+                        (sheet-screen-position-xy sheet)
+                      (declare (ignore parent-x))
+                      (let* ((parent-row (round parent-y))
+                             (parent-h (round (bounding-rectangle-height (sheet-region sheet))))
+                             (row-end (min (+ parent-row parent-h) term-height)))
                         (dolist (child children)
-                          (draw-separators child))))))))
+                          (multiple-value-bind (sx sy)
+                              (sheet-screen-position-xy child)
+                            (declare (ignore sy))
+                            (let ((col (round sx)))
+                              (when (> col 0)
+                                (let ((fg (if (child-contains-active-p child frame port)
+                                              focus-color inactive-color)))
+                                  (draw-v-line col parent-row row-end fg)))))
+                          ;; Recurse into children for nested splits
+                          (draw-separators child)))))
+                   ;; Other composite — just recurse
+                   (t
+                    (dolist (child children)
+                      (draw-separators child))))))))
         (draw-separators tls)))))
 
 ;;; Scroll the focused pane by a given delta (positive = scroll down).
