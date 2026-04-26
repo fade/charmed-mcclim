@@ -544,71 +544,86 @@
 ;;; Form Pane Event Handling
 ;;; ============================================================
 
-(defun fps-handle-key (fps event)
-  "Handle a keyboard event for the form pane state. Returns T if consumed."
+(defun fps-handle-key (fps event &optional pane)
+  "Handle a keyboard event for the form pane state. Returns T if consumed.
+
+When PANE is supplied and the event is consumed (the function returns T),
+marks the pane dirty before returning so the next render-frame repaints
+the host pane. PANE is optional for backwards compatibility — callers
+that wrap their own dirty-mark continue to work unchanged.
+
+Without the dirty-mark, an editing-branch character insert mutates the
+form-pane-state buffer but the pane stays clean from render-frame's
+perspective, so typed characters are invisible until something else
+dirties the pane. Threading the pane through here is the smallest API
+change that gives every consumer correct repaint behaviour."
   (when (typep event 'keyboard-event)
     (let* ((key (keyboard-event-key event))
            (code (key-event-code key))
-           (char (key-event-char key)))
-      (cond
-        ((form-pane-state-editing-p fps)
-         (cond
-           ((eql code +key-enter+)
-            (if (form-pane-state-form-mode-p fps)
-                (fps-commit-all fps)
-                (fps-commit-edit fps))
-            t)
-           ((eql code +key-escape+)
-            (fps-cancel-edit fps) t)
-           ((and (eql code +key-tab+) (form-pane-state-form-mode-p fps))
-            (fps-save-current-buffer fps)
-            (fps-next-editable fps)
-            (let ((pair (assoc (form-pane-state-selected fps)
-                               (form-pane-state-field-buffers fps))))
-              (when pair
-                (setf (form-pane-state-edit-buffer fps) (cdr pair)
-                      (form-pane-state-edit-cursor fps)
-                      (length (form-pane-state-edit-buffer fps))
-                      (form-pane-state-error-message fps) nil)))
-            t)
-           ((and (eql code +key-up+) (form-pane-state-form-mode-p fps))
-            (fps-save-current-buffer fps)
-            (fps-prev-editable fps)
-            (let ((pair (assoc (form-pane-state-selected fps)
-                               (form-pane-state-field-buffers fps))))
-              (when pair
-                (setf (form-pane-state-edit-buffer fps) (cdr pair)
-                      (form-pane-state-edit-cursor fps)
-                      (length (form-pane-state-edit-buffer fps))
-                      (form-pane-state-error-message fps) nil)))
-            t)
-           ((and (eql code +key-down+) (form-pane-state-form-mode-p fps))
-            (fps-save-current-buffer fps)
-            (fps-next-editable fps)
-            (let ((pair (assoc (form-pane-state-selected fps)
-                               (form-pane-state-field-buffers fps))))
-              (when pair
-                (setf (form-pane-state-edit-buffer fps) (cdr pair)
-                      (form-pane-state-edit-cursor fps)
-                      (length (form-pane-state-edit-buffer fps))
-                      (form-pane-state-error-message fps) nil)))
-            t)
-           ((eql code +key-backspace+)
-            (fps-delete-backward fps) t)
-           ((eql code +key-delete+)
-            (fps-delete-forward fps) t)
-           ((eql code +key-left+)
-            (fps-move-cursor fps -1) t)
-           ((eql code +key-right+)
-            (fps-move-cursor fps 1) t)
-           ((eql code +key-home+)
-            (fps-cursor-home fps) t)
-           ((eql code +key-end+)
-            (fps-cursor-end fps) t)
-           ((and char (graphic-char-p char))
-            (fps-insert-char fps char) t)
-           (t nil)))
-        (t nil)))))
+           (char (key-event-char key))
+           (consumed
+             (cond
+               ((form-pane-state-editing-p fps)
+                (cond
+                  ((eql code +key-enter+)
+                   (if (form-pane-state-form-mode-p fps)
+                       (fps-commit-all fps)
+                       (fps-commit-edit fps))
+                   t)
+                  ((eql code +key-escape+)
+                   (fps-cancel-edit fps) t)
+                  ((and (eql code +key-tab+) (form-pane-state-form-mode-p fps))
+                   (fps-save-current-buffer fps)
+                   (fps-next-editable fps)
+                   (let ((pair (assoc (form-pane-state-selected fps)
+                                      (form-pane-state-field-buffers fps))))
+                     (when pair
+                       (setf (form-pane-state-edit-buffer fps) (cdr pair)
+                             (form-pane-state-edit-cursor fps)
+                             (length (form-pane-state-edit-buffer fps))
+                             (form-pane-state-error-message fps) nil)))
+                   t)
+                  ((and (eql code +key-up+) (form-pane-state-form-mode-p fps))
+                   (fps-save-current-buffer fps)
+                   (fps-prev-editable fps)
+                   (let ((pair (assoc (form-pane-state-selected fps)
+                                      (form-pane-state-field-buffers fps))))
+                     (when pair
+                       (setf (form-pane-state-edit-buffer fps) (cdr pair)
+                             (form-pane-state-edit-cursor fps)
+                             (length (form-pane-state-edit-buffer fps))
+                             (form-pane-state-error-message fps) nil)))
+                   t)
+                  ((and (eql code +key-down+) (form-pane-state-form-mode-p fps))
+                   (fps-save-current-buffer fps)
+                   (fps-next-editable fps)
+                   (let ((pair (assoc (form-pane-state-selected fps)
+                                      (form-pane-state-field-buffers fps))))
+                     (when pair
+                       (setf (form-pane-state-edit-buffer fps) (cdr pair)
+                             (form-pane-state-edit-cursor fps)
+                             (length (form-pane-state-edit-buffer fps))
+                             (form-pane-state-error-message fps) nil)))
+                   t)
+                  ((eql code +key-backspace+)
+                   (fps-delete-backward fps) t)
+                  ((eql code +key-delete+)
+                   (fps-delete-forward fps) t)
+                  ((eql code +key-left+)
+                   (fps-move-cursor fps -1) t)
+                  ((eql code +key-right+)
+                   (fps-move-cursor fps 1) t)
+                  ((eql code +key-home+)
+                   (fps-cursor-home fps) t)
+                  ((eql code +key-end+)
+                   (fps-cursor-end fps) t)
+                  ((and char (graphic-char-p char))
+                   (fps-insert-char fps char) t)
+                  (t nil)))
+               (t nil))))
+      (when (and consumed pane)
+        (setf (pane-dirty-p pane) t))
+      consumed)))
 
 ;;; ============================================================
 ;;; Form Pane Display (Medium-based)

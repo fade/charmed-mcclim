@@ -460,7 +460,33 @@
     (check-equal "value after commit-all"
                  (typed-field-value (first (form-pane-state-fields fps)))
                  "Charlie")
-    (check "on-commit called" committed)))
+    (check "on-commit called" committed))
+
+  ;; fps-handle-key marks a supplied pane dirty after consuming a printable
+  ;; character. Without this contract the form-pane mutates buffer state but
+  ;; the next render-frame skips the pane (pane-dirty-p stays NIL), so typed
+  ;; characters are invisible until something unrelated dirties the pane.
+  (let* ((field (make-typed-field :name :note :label "Note" :value ""
+                                  :field-type :string :editable-p t))
+         (fps (make-typed-form (list field)))
+         (pane (make-instance 'application-pane :x 1 :y 1 :width 40 :height 5)))
+    (fps-begin-edit fps)
+    ;; defclass initform leaves dirty-p T; clear it so the assertion proves
+    ;; the consumed key is what flipped the flag, not initial state.
+    (setf (pane-dirty-p pane) nil)
+    (let* ((ck (charmed:make-key-event :char #\a))
+           (ev (make-instance 'keyboard-event :key ck)))
+      (check "fps-handle-key returns T on char" (fps-handle-key fps ev pane))
+      (check "pane dirty after consumed key" (pane-dirty-p pane))
+      (check-equal "edit buffer extended" (form-pane-state-edit-buffer fps) "a"))
+    ;; Backwards compat — omitting the pane still returns T and still mutates
+    ;; the buffer; existing callers that wrap their own dirty-mark must keep
+    ;; working.
+    (let* ((ck (charmed:make-key-event :char #\b))
+           (ev (make-instance 'keyboard-event :key ck)))
+      (check "no-pane variant returns T" (fps-handle-key fps ev))
+      (check-equal "edit buffer extended again"
+                   (form-pane-state-edit-buffer fps) "ab"))))
 
 ;;; ============================================================
 ;;; Frame Definition Tests

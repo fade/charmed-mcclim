@@ -340,7 +340,7 @@
          (cond
            ;; Edit mode — delegate to framework
            ((and *form* (form-pane-state-editing-p *form*))
-            (fps-handle-key *form* event)
+            (fps-handle-key *form* event *form-pane*)
             (mark-all-dirty)
             (update-status)
             t)
